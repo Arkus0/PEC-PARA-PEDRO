@@ -1,0 +1,125 @@
+{
+  "metadata": {
+    "kernelspec": {
+      "name": "python",
+      "display_name": "Python (Pyodide)",
+      "language": "python"
+    },
+    "language_info": {
+      "codemirror_mode": {
+        "name": "python",
+        "version": 3
+      },
+      "file_extension": ".py",
+      "mimetype": "text/x-python",
+      "name": "python",
+      "nbconvert_exporter": "python",
+      "pygments_lexer": "ipython3",
+      "version": "3.8"
+    }
+  },
+  "nbformat_minor": 5,
+  "nbformat": 4,
+  "cells": [
+    {
+      "id": "b6003065-3ce7-4ffb-b93d-4d9c0316c69d",
+      "cell_type": "code",
+      "source": "# ===============================================================\n#  ANÁLISIS SALARIAL\n#  Autor: [JUAN JOSÉ MORENO VALLE \n# ===============================================================\n\nimport numpy as np\nimport pandas as pd\nimport matplotlib.pyplot as plt\nimport seaborn as sns\nfrom scipy import stats\nfrom statsmodels.stats.multicomp import pairwise_tukeyhsd\nfrom sklearn.covariance import EllipticEnvelope\nfrom scipy.optimize import minimize\nimport random",
+      "metadata": {
+        "trusted": true
+      },
+      "outputs": [],
+      "execution_count": null
+    },
+    {
+      "id": "31549542-aa05-47fb-a64c-ddd0590cfded",
+      "cell_type": "code",
+      "source": "# ===============================================================\n# 1. Datos base\n# ===============================================================\n# Tabla promedio de salarios por departamento (en euros/mes).\n# #Peor dataframe de la historia (BORRAR)\n# ===============================================================\n\ndf = pd.DataFrame({\n    'Departamento': [\n        'Ventas', 'Recursos Humanos', 'Produccion', 'Marketing',\n        'IT', 'I+D', 'Finanzas'\n    ],\n    'Salario_medio': [4100, 3800, 3950, 4000, 4150, 4050, 4200]\n})\ndf",
+      "metadata": {
+        "trusted": true
+      },
+      "outputs": [],
+      "execution_count": null
+    },
+    {
+      "id": "ae4ad72b-72db-4a2f-8661-1e814fa8a717",
+      "cell_type": "code",
+      "source": "# ===============================================================\n# 2. Simulación jerárquica de empleados\n# ===============================================================\n# Generamos salarios individuales, pero esta vez:\n# - número de empleados aleatorio (50-300)\n# - distribución log-normal *con ruido extra interdepartamental*\n# - cada departamento tiene su propia \"volatilidad salarial\"\n# ===============================================================\n\nnp.random.seed(42)\nregistros = []\n\nfor _, row in df.iterrows():\n    n = np.random.randint(50, 300)\n    sigma = np.random.uniform(0.20, 0.40)   # dispersión distinta por dpto\n    mu = np.log(row['Salario_medio']) - 0.5 * sigma**2\n    salarios = np.random.lognormal(mean=mu, sigma=sigma, size=n)\n    \n    # se mete un poco de ruido pesado (empleados fuera de escala)\n    if np.random.rand() < 0.5:\n        outliers = np.random.choice(range(n), size=int(0.05*n), replace=False)\n        salarios[outliers] *= np.random.uniform(1.3, 2.0)  # bonus salvajes\n    \n    for s in salarios:\n        registros.append([row['Departamento'], s, sigma])\n\ndf_emp = pd.DataFrame(registros, columns=['Departamento', 'Salario', 'Volatilidad'])\ndf_emp.head()",
+      "metadata": {
+        "trusted": true
+      },
+      "outputs": [],
+      "execution_count": null
+    },
+    {
+      "id": "f3801089-aa36-45a9-ba0d-6ba426c9aeb1",
+      "cell_type": "code",
+      "source": "# ===============================================================\n# 3. Limpieza y detección robusta de outliers\n# ===============================================================\n# Usamos un estimador robusto elíptico (basado en Mahalanobis)\n# para marcar outliers multivariados en el espacio salario-volatilidad.\n#O al menos asi lo veo porque esto ya empieza a ser free style (BORRAR)\n# ===============================================================\n\nX = df_emp[['Salario', 'Volatilidad']]\nmodelo_robusto = EllipticEnvelope(contamination=0.05)\ndf_emp['Outlier'] = modelo_robusto.fit_predict(X)\ndf_emp['Outlier'] = df_emp['Outlier'].map({1: False, -1: True})\n\nplt.figure(figsize=(9,6))\nsns.scatterplot(data=df_emp, x='Volatilidad', y='Salario', hue='Outlier', s=25)\nplt.title(\"Detección robusta de valores atípicos\")\nplt.show()\n\ndf_emp['Outlier'].value_counts()",
+      "metadata": {
+        "trusted": true
+      },
+      "outputs": [],
+      "execution_count": null
+    },
+    {
+      "id": "134251bf-6bd4-41b0-9cac-9df0d4c1fbbf",
+      "cell_type": "code",
+      "source": "# ===============================================================\n# 4. ANOVA robusto + post hoc\n# ===============================================================\n# ANOVA tradicional no es muy fiable con outliers.\n# Para endurecerlo, se usa trimmed mean (recorta extremos).\n# ===============================================================\n\ndef trimmed_mean(x, trim=0.1):\n    \"\"\"Media recortada al 10% para reducir el peso de extremos.\"\"\"\n    return stats.trim_mean(x, proportiontocut=trim)\n\ndept_means = df_emp.groupby('Departamento')['Salario'].apply(trimmed_mean)\ndept_means",
+      "metadata": {
+        "trusted": true
+      },
+      "outputs": [],
+      "execution_count": null
+    },
+    {
+      "id": "f6d0500c-7c49-4aa3-9912-b46ca06fd252",
+      "cell_type": "code",
+      "source": "# ANOVA normal para comparar con la robusta (por contraste)\nanova = stats.f_oneway(\n    *[df_emp.loc[df_emp['Departamento']==d, 'Salario'] for d in df['Departamento']]\n)\nprint(f\"ANOVA clásico p={anova.pvalue:.5f}\")\n\nif anova.pvalue < 0.05:\n    tukey = pairwise_tukeyhsd(df_emp['Salario'], df_emp['Departamento'], alpha=0.05)\n    print(tukey.summary())",
+      "metadata": {
+        "trusted": true
+      },
+      "outputs": [],
+      "execution_count": null
+    },
+    {
+      "id": "2d3bc4a7-01b9-482d-b8e3-95b2f93ff97e",
+      "cell_type": "code",
+      "source": "# ===============================================================\n# 5. Modelado \"bayesiano\" simplificado\n# ===============================================================\n# Sin librerías de MCMC aquí. Vamos con una versión simplificada:\n# asume que cada salario sigue N(mu_d, sigma_d²)\n# y calculamos la probabilidad de que un empleado de un dpto A\n# gane más que uno de B. Solo para ver comparativas.\n# ===============================================================\n\ndef prob_superior(mu1, s1, mu2, s2):\n    # Probabilidad de que X1 > X2 dado normalidad\n    diff_mean = mu1 - mu2\n    diff_std = np.sqrt(s1**2 + s2**2)\n    return 1 - stats.norm.cdf(0, diff_mean, diff_std)\n\nstats_df = df_emp.groupby('Departamento')['Salario'].agg(['mean', 'std'])\n\nfor d1 in stats_df.index:\n    for d2 in stats_df.index:\n        if d1 != d2:\n            p = prob_superior(stats_df.loc[d1,'mean'], stats_df.loc[d1,'std'],\n                              stats_df.loc[d2,'mean'], stats_df.loc[d2,'std'])\n            if p > 0.85:\n                print(f\"P({d1} > {d2}) ≈ {p:.2f}\")",
+      "metadata": {
+        "trusted": true
+      },
+      "outputs": [],
+      "execution_count": null
+    },
+    {
+      "id": "3db44cd0-f0ec-4ef5-b7aa-71ee8c173921",
+      "cell_type": "code",
+      "source": "# ===============================================================\n# 6. Optimización bajo restricción presupuestaria\n# ===============================================================\n# Supón que hay un presupuesto adicional máximo del 3% sobre el coste total.\n# Se quiere redistribuirlo de forma que se reduzca la desigualdad (CV global).\n# Planteamos una minimización numérica con restricción lineal.\n# ===============================================================\n\n# punto de partida\nsal_med = df_emp.groupby('Departamento')['Salario'].mean()\ncoste_total = df_emp['Salario'].sum()\nbudget = coste_total * 0.03  # 3% extra máximo\n\ndeptos = sal_med.index\nn = len(deptos)\n\ndef cv_global(increments):\n    \"\"\"Calcula el CV global tras aplicar incrementos porcentuales.\"\"\"\n    df_temp = df_emp.copy()\n    inc_dict = {deptos[i]: 1 + increments[i] for i in range(n)}\n    df_temp['Nuevo'] = df_temp.apply(lambda x: x['Salario'] * inc_dict[x['Departamento']], axis=1)\n    return df_temp['Nuevo'].std() / df_temp['Nuevo'].mean()\n\n# restricción: no pasarse del presupuesto\ndef restriccion(increments):\n    total_extra = sum(\n        df_emp.loc[df_emp['Departamento']==deptos[i], 'Salario'].sum() * increments[i]\n        for i in range(n)\n    )\n    return budget - total_extra\n\n# límites: no puede bajarse salario ni subir más del 15% por dpto\nbounds = [(0, 0.15)] * n\n\nres = minimize(cv_global, np.zeros(n), method='SLSQP',\n               bounds=bounds, constraints={'type':'ineq', 'fun':restriccion})\n\nopt_increments = res.x\ndf_opt = pd.DataFrame({\n    'Departamento': deptos,\n    'Incremento_optimo_%': np.round(opt_increments*100, 2)\n})\ndf_opt",
+      "metadata": {
+        "trusted": true
+      },
+      "outputs": [],
+      "execution_count": null
+    },
+    {
+      "id": "d82dd08c-2c96-441d-a169-2c76707e712e",
+      "cell_type": "code",
+      "source": "# ===============================================================\n# 7. Evaluación final\n# ===============================================================\n# Mostramos el cambio en desigualdad antes y después de la optimización.\n#Fucking time to pray (BORRAR)\n# ===============================================================\n\ncv_before = df_emp['Salario'].std() / df_emp['Salario'].mean()\n\ndf_emp['Nuevo_salario'] = df_emp.apply(\n    lambda x: x['Salario'] * (1 + opt_increments[list(deptos).index(x['Departamento'])]),\n    axis=1\n)\n\ncv_after = df_emp['Nuevo_salario'].std() / df_emp['Nuevo_salario'].mean()\n\nprint(f\"CV antes: {cv_before:.4f}\")\nprint(f\"CV después: {cv_after:.4f}\")\nprint(f\"Reducción relativa del CV: {(1 - cv_after/cv_before)*100:.2f}%\")\n\nsns.boxplot(data=df_emp, y='Departamento', x='Nuevo_salario', palette='cubehelix')\nplt.title(\"Distribución salarial tras la optimización\")\nplt.show()",
+      "metadata": {
+        "trusted": true
+      },
+      "outputs": [],
+      "execution_count": null
+    },
+    {
+      "id": "441c653d-f47e-4494-b18a-455c0a565e68",
+      "cell_type": "code",
+      "source": "# ===============================================================\n# 8. Reflexión final (la te tacion final de usar IA (BORRAR)\n# ===============================================================\n# - Qué ventajas ofrece el uso de métodos robustos en presencia de outliers?\n# - Qué sentido económico tiene minimizar el CV global?\n# - Qué riesgos tiene redistribuir salarios sin análisis causal?\n# - Cómo se podría formalizar este modelo en un contexto bayesiano real?\n# ===============================================================",
+      "metadata": {
+        "trusted": true
+      },
+      "outputs": [],
+      "execution_count": null
+    }
+  ]
+}
